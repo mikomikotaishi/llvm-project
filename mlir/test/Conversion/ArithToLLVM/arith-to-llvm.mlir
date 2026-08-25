@@ -566,7 +566,7 @@ func.func @fcmp(f32, f32) -> () {
 
 // CHECK-LABEL: @index_vector
 func.func @index_vector(%arg0: vector<4xindex>) {
-  // CHECK: %[[CST:.*]] = llvm.mlir.constant(dense<[0, 1, 2, 3]> : vector<4xindex>) : vector<4xi64>
+  // CHECK: %[[CST:.*]] = llvm.mlir.constant(dense<[0, 1, 2, 3]> : vector<4xi64>) : vector<4xi64>
   %0 = arith.constant dense<[0, 1, 2, 3]> : vector<4xindex>
   // CHECK: %[[V:.*]] = llvm.add %{{.*}}, %[[CST]] : vector<4xi64>
   %1 = arith.addi %arg0, %0 : vector<4xindex>
@@ -980,4 +980,31 @@ func.func @supported_fp_type(%arg0: f32, %arg1: vector<4xf32>, %arg2: vector<4x8
   %2 = arith.addf %arg2, %arg2 : vector<4x8xf32>
   %3 = arith.cmpf oeq, %arg0, %arg3 : f32
   return
+}
+
+// -----
+
+// The type converter maps the low-precision float types that have no LLVM
+// equivalent to an integer of the same width. The value attribute stays a float
+// attribute, which `llvm.mlir.constant` accepts for such a result type.
+
+// CHECK-LABEL: @low_precision_float_constant
+//       CHECK:   llvm.mlir.constant(1.000000e+00 : f8E4M3FN) : i8
+//       CHECK:   llvm.mlir.constant(dense<1.000000e+00> : vector<4xf8E4M3FN>) : vector<4xi8>
+func.func @low_precision_float_constant() -> (f8E4M3FN, vector<4xf8E4M3FN>) {
+  %0 = arith.constant 1.0 : f8E4M3FN
+  %1 = arith.constant dense<1.0> : vector<4xf8E4M3FN>
+  return %0, %1 : f8E4M3FN, vector<4xf8E4M3FN>
+}
+
+// -----
+
+// A sparse elements attribute of `index` element type has to be rebuilt, as it
+// cannot be retyped element-wise like a dense one.
+
+// CHECK-LABEL: @sparse_index_constant
+//       CHECK:   llvm.mlir.constant(sparse<0, 1> : vector<4xi64>) : vector<4xi64>
+func.func @sparse_index_constant() -> vector<4xindex> {
+  %0 = arith.constant sparse<[[0]], [1]> : vector<4xindex>
+  return %0 : vector<4xindex>
 }
