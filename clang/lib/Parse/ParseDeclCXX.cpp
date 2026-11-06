@@ -542,9 +542,40 @@ Decl *Parser::ParseUsingDirective(DeclaratorContext Context,
                                      IdentLoc, NamespcName, attrs);
 }
 
+SourceLocation Parser::findGroupPackEllipsisAfterBrace() {
+  assert(Tok.is(tok::l_brace) &&
+         "findGroupPackEllipsisAfterBrace expects to start at '{'");
+  // Scan ahead counting brace nesting.
+  unsigned Depth = 0;
+  for (unsigned N = 0;; ++N) {
+    const Token &T = GetLookAheadToken(N);
+    if (T.is(tok::eof) || T.is(tok::semi))
+      return SourceLocation();
+    if (T.is(tok::l_brace)) {
+      ++Depth;
+    } else if (T.is(tok::r_brace)) {
+      --Depth;
+      if (Depth == 0) {
+        // Matching '}' of the top-level group. A '...' immediately after it
+        // marks the whole declarator as a pack expansion.
+        const Token &After = GetLookAheadToken(N + 1);
+        if (After.is(tok::ellipsis))
+          return After.getLocation();
+        return SourceLocation();
+      }
+    }
+  }
+}
+
 bool Parser::ParseUsingDeclarator(DeclaratorContext Context,
                                   UsingDeclarator &D) {
   D.clear();
+
+  if (!D.Outer.empty()) {
+    D.SS = D.Outer.back();
+  } else {
+    D.GroupEllipsisLoc = SourceLocation();
+  }
 
   // Ignore optional 'typename'.
   // FIXME: This is wrong; we should parse this as a typename-specifier.
@@ -555,20 +586,78 @@ bool Parser::ParseUsingDeclarator(DeclaratorContext Context,
     return true;
   }
 
-  // Parse nested-name-specifier.
   const IdentifierInfo *LastII = nullptr;
-  if (ParseOptionalCXXScopeSpecifier(D.SS, /*ObjectType=*/nullptr,
-                                     /*ObjectHasErrors=*/false,
-                                     /*EnteringContext=*/false,
-                                     /*MayBePseudoDtor=*/nullptr,
-                                     /*IsTypename=*/false,
-                                     /*LastII=*/&LastII,
-                                     /*OnlyNamespace=*/false,
-                                     /*InUsingDeclaration=*/true))
+  while (true) {
+    if (!D.Outer.empty()) {
+      if (Tok.is(tok::coloncolon)) {
+        Diag(Tok.getLocation(), diag::err_using_item_leading_coloncolon);
+        return true;
+      }
+      if (Tok.is(tok::l_brace)) {
+        Diag(Tok.getLocation(), diag::err_using_item_bare_brace);
+        return true;
+      }
+    }
 
-    return true;
-  if (D.SS.isInvalid())
-    return true;
+    if (ParseOptionalCXXScopeSpecifier(D.SS, /*ObjectType=*/nullptr,
+                                       /*ObjectHasErrors=*/false,
+                                       /*EnteringContext=*/false,
+                                       /*MayBePseudoDtor=*/nullptr,
+                                       /*IsTypename=*/false,
+                                       /*LastII=*/&LastII,
+                                       /*OnlyNamespace=*/false,
+                                       /*InUsingDeclaration=*/true))
+      return true;
+    if (D.SS.isInvalid())
+      return true;
+
+    if (Tok.isNot(tok::l_brace))
+      break;
+
+    if (D.SS.isEmpty()) {
+      Diag(Tok.getLocation(), diag::err_using_group_requires_qualname);
+      return true;
+    }
+    DiagCompat(Tok.getLocation(), diag_compat::grouped_using_declaration);
+
+    if (D.Outer.empty())
+      D.GroupEllipsisLoc = findGroupPackEllipsisAfterBrace();
+
+    D.Outer.push_back(D.SS);
+    ConsumeBrace();
+    // An empty braced using-item-list, or one that begins with a comma, is ill-formed.
+    if (Tok.is(tok::r_brace) || Tok.is(tok::comma)) {
+      Diag(Tok.getLocation(), diag::err_using_empty_item_list);
+      return true;
+    }
+    D.SS = D.Outer.back();
+    TryConsumeToken(tok::kw_typename, D.TypenameLoc);
+  }
+
+  if (Tok.is(tok::kw_this)) {
+    if (D.Outer.empty()) {
+      Diag(Tok.getLocation(), diag::err_using_this_outside_braced_list);
+      return true;
+    }
+    DiagCompat(Tok.getLocation(), diag_compat::grouped_using_declaration);
+    D.ThisLoc = ConsumeToken();
+    // 'this' is terminal.
+    if (Tok.is(tok::coloncolon)) {
+      Diag(Tok.getLocation(), diag::err_using_this_followed_by_scope);
+      return true;
+    }
+    return false;
+  }
+
+  if (Tok.is(tok::star)) {
+    if (D.SS.isEmpty()) {
+      Diag(Tok.getLocation(), diag::err_using_glob_requires_qualname);
+      return true;
+    }
+    DiagCompat(Tok.getLocation(), diag_compat::grouped_using_declaration);
+    D.StarLoc = ConsumeToken();
+    return false;
+  }
 
   // Parse the unqualified-id. We allow parsing of both constructor and
   // destructor names and allow the action module to diagnose any semantic
@@ -714,6 +803,7 @@ Parser::DeclGroupPtrTy Parser::ParseUsingDeclaration(
 
   UsingDeclarator D;
   bool InvalidDeclarator = ParseUsingDeclarator(Context, D);
+  bool UsedGroupedUsing = !D.Outer.empty();
 
   ParsedAttributes Attrs(AttrFactory);
   MaybeParseAttributes(PAKM_GNU | PAKM_CXX11, Attrs);
@@ -782,7 +872,25 @@ Parser::DeclGroupPtrTy Parser::ParseUsingDeclaration(
 
     if (InvalidDeclarator)
       SkipUntil(tok::comma, tok::semi, StopBeforeMatch);
-    else {
+    else if (D.isThis()) {
+      if (D.GroupEllipsisLoc.isValid())
+        Diag(D.GroupEllipsisLoc, diag::err_using_pack_non_pack_item) << 1;
+      bool IsMemberContext = Context == DeclaratorContext::Member;
+      Decl *UD = Actions.ActOnUsingThisDeclaration(
+          getCurScope(), AS, UsingLoc, D.SS, D.ThisLoc, IsMemberContext, Attrs);
+      if (UD)
+        DeclsInGroup.push_back(UD);
+    } else if (D.isGlob()) {
+      if (D.TypenameLoc.isValid())
+        Diag(D.TypenameLoc, diag::err_using_glob_typename)
+            << FixItHint::CreateRemoval(SourceRange(D.TypenameLoc));
+      if (D.GroupEllipsisLoc.isValid())
+        Diag(D.GroupEllipsisLoc, diag::err_using_pack_non_pack_item) << 0;
+      Decl *UD = Actions.ActOnUsingGlobDeclaration(getCurScope(), AS, UsingLoc,
+                                                   D.SS, D.StarLoc, Attrs);
+      if (UD)
+        DeclsInGroup.push_back(UD);
+    } else {
       // "typename" keyword is allowed for identifiers only,
       // because it may be a type definition.
       if (D.TypenameLoc.isValid() &&
@@ -794,22 +902,57 @@ Parser::DeclGroupPtrTy Parser::ParseUsingDeclaration(
         D.TypenameLoc = SourceLocation();
       }
 
+      // The effective pack-expansion ellipsis for this item is either its own
+      // item-level '...' or the group-level '...' that follows the closing '}'.
+      SourceLocation ItemEllipsisLoc =
+          D.EllipsisLoc.isValid() ? D.EllipsisLoc : D.GroupEllipsisLoc;
+
       Decl *UD = Actions.ActOnUsingDeclaration(getCurScope(), AS, UsingLoc,
                                                D.TypenameLoc, D.SS, D.Name,
-                                               D.EllipsisLoc, Attrs);
+                                               ItemEllipsisLoc, Attrs);
       if (UD)
         DeclsInGroup.push_back(UD);
     }
 
-    if (!TryConsumeToken(tok::comma))
+    // Close out any braced using-item-lists whose final item we just parsed,
+    // then handle the separators.
+    auto CloseBraces = [&] {
+      while (!D.Outer.empty() && Tok.is(tok::r_brace)) {
+        D.Outer.pop_back();
+        ConsumeBrace();
+        // When the top-level group closes, consume the group-level pack expansion '...'.
+        if (D.Outer.empty() && D.GroupEllipsisLoc.isValid()) {
+          assert(Tok.is(tok::ellipsis) &&
+                 "group pack ellipsis look-ahead disagrees with token stream");
+          ConsumeToken();
+        }
+      }
+    };
+
+    // Consume separators: close any braced using-item-lists that end here, and
+    // absorb trailing commas that are immediately followed by '}'.
+    bool ParseNext = false;
+    while (true) {
+      CloseBraces();
+      if (!TryConsumeToken(tok::comma)) {
+        ParseNext = false;
+        break;
+      }
+      if (!D.Outer.empty() && Tok.is(tok::r_brace))
+        continue;
+      ParseNext = true;
+      break;
+    }
+    if (!ParseNext)
       break;
 
     // Parse another using-declarator.
     Attrs.clear();
     InvalidDeclarator = ParseUsingDeclarator(Context, D);
+    UsedGroupedUsing |= !D.Outer.empty();
   }
 
-  if (DeclsInGroup.size() > 1)
+  if (DeclsInGroup.size() > 1 && !UsedGroupedUsing)
     DiagCompat(Tok.getLocation(), diag_compat::multi_using_declaration);
 
   // Eat ';'.

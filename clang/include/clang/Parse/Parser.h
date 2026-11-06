@@ -3317,16 +3317,31 @@ private:
 
   struct UsingDeclarator {
     SourceLocation TypenameLoc;
+    llvm::SmallVector<CXXScopeSpec, 4> Outer;
     CXXScopeSpec SS;
     UnqualifiedId Name;
     SourceLocation EllipsisLoc;
+    SourceLocation StarLoc;
+    SourceLocation ThisLoc;
+    SourceLocation GroupEllipsisLoc;
 
+    /// Whether this declarator is the glob form 'nested-name-specifier *'.
+    bool isGlob() const { return StarLoc.isValid(); }
+
+    /// Whether this item is the 'this' using-item form.
+    bool isThis() const { return ThisLoc.isValid(); }
+
+    /// Reset the per-item state (scope specifier, name, locations) before
+    /// parsing the next using-declarator.
     void clear() {
-      TypenameLoc = EllipsisLoc = SourceLocation();
+      TypenameLoc = EllipsisLoc = StarLoc = ThisLoc = SourceLocation();
       SS.clear();
       Name.clear();
+      // GroupEllipsisLoc intentionally preserved across items of a group.
     }
   };
+
+
 
   /// Parse a using-declarator (or the identifier in a C++11 alias-declaration).
   ///
@@ -3336,6 +3351,12 @@ private:
   /// \endverbatim
   ///
   bool ParseUsingDeclarator(DeclaratorContext Context, UsingDeclarator &D);
+
+  /// Look ahead from the braced using-item-list's opening '{' (the current
+  /// token) to its matching '}', and if a pack-expansion '...' immediately
+  /// follows, return that '...' location; otherwise return an invalid
+  /// location. Does not consume any tokens.
+  SourceLocation findGroupPackEllipsisAfterBrace();
 
   /// ParseUsingDeclaration - Parse C++ using-declaration or alias-declaration.
   /// Assumes that 'using' was already seen.

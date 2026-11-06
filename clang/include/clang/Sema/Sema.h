@@ -5620,6 +5620,28 @@ public:
                                   SourceLocation EnumLoc, SourceRange TyLoc,
                                   const IdentifierInfo &II, ParsedType Ty,
                                   const CXXScopeSpec &SS);
+
+  /// Act on a glob using-declaration of the form 'using nested-name-specifier *;'
+  /// and lower it to a using-directive or using-enum-declaration.
+  Decl *ActOnUsingGlobDeclaration(Scope *CurScope, AccessSpecifier AS,
+                                  SourceLocation UsingLoc, CXXScopeSpec &SS,
+                                  SourceLocation StarLoc,
+                                  const ParsedAttributesView &AttrList);
+
+  /// Act on a 'this' using-item (inside a braced using-item-list).
+  Decl *ActOnUsingThisDeclaration(Scope *CurScope, AccessSpecifier AS,
+                                  SourceLocation UsingLoc,
+                                  CXXScopeSpec &EnclosingSS,
+                                  SourceLocation ThisLoc, bool IsMemberContext,
+                                  const ParsedAttributesView &AttrList);
+
+  /// Build an equivalent namespace-alias-definition naming \p Alias for that namespace.
+  Decl *BuildUsingNamespaceAlias(Scope *CurScope, SourceLocation UsingLoc,
+                                 CXXScopeSpec &Prefix, IdentifierInfo *Alias,
+                                 SourceLocation AliasLoc,
+                                 const NamespaceDecl *NS, bool IsMemberContext,
+                                 bool HasTypename, SourceLocation TypenameLoc);
+
   Decl *ActOnAliasDeclaration(Scope *CurScope, AccessSpecifier AS,
                               MultiTemplateParamsArg TemplateParams,
                               SourceLocation UsingLoc, UnqualifiedId &Name,

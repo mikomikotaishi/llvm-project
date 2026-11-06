@@ -438,9 +438,8 @@ bool Parser::ParseOptionalCXXScopeSpecifier(
       }
     }
 
-    if (Next.is(tok::coloncolon) && GetLookAheadToken(2).is(tok::l_brace)) {
-      // It is invalid to have :: {, consume the scope qualifier and pretend
-      // like we never saw it.
+    if (!InUsingDeclaration && Next.is(tok::coloncolon) &&
+        GetLookAheadToken(2).is(tok::l_brace)) {
       Token Identifier = Tok; // Stash away the identifier.
       ConsumeToken();         // Eat the identifier, current token is now '::'.
       ConsumeToken();

@@ -734,6 +734,22 @@ def err_using_enum_is_dependent : Error<
   "using-enum cannot name a dependent type">;
 def err_using_enum_not_enum : Error<
   "%0 is not an enumerated type">;
+def err_using_glob_not_namespace_or_enum : Error<
+  "a using-declaration with '*' must name a namespace or enumeration">;
+def err_using_glob_global_scope : Error<
+  "a using-declaration with '*' cannot name the global scope">;
+def err_using_glob_dependent : Error<
+  "a using-declaration with '*' cannot name a dependent scope">;
+def err_using_decl_namespace_alias_in_class : Error<
+  "a using-declaration that names a namespace cannot appear in a class; "
+  "it is equivalent to a namespace alias, which is not permitted here">;
+def err_using_decl_namespace_alias_typename : Error<
+  "'typename' cannot be applied to a using-declaration that names a namespace">;
+def err_using_this_names_class_or_enum : Error<
+  "'this' names %0, which has no nested-name-specifier of its own and so "
+  "cannot be introduced by a using-declaration">;
+def err_using_this_global_scope : Error<
+  "'this' cannot appear in a braced using-item-list qualified by '::'">;
 def err_ambiguous_inherited_constructor : Error<
   "constructor of %0 inherited from multiple base class subobjects">;
 def note_ambiguous_inherited_constructor_using : Note<

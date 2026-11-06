@@ -767,6 +767,9 @@ static void InitializeCPlusPlusFeatureTestMacros(const LangOptions &LangOpts,
   Builder.defineMacro("__cpp_trivial_relocatability", "202502L");
   Builder.defineMacro("__cpp_pp_embed", "202502L");
 
+  // Grouped using-declarations
+  Builder.defineMacro("__cpp_grouped_using", "202611L");
+
   // C++26 reflection.
   if (LangOpts.Reflection)
     Builder.defineMacro("__CLANG_CXX_REFLECTION__");

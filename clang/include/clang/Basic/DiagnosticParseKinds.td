@@ -103,6 +103,10 @@ defm delete_with_message : CXX26Compat<"'= delete' with a message is", /*ext_war
 defm variadic_friends : CXX26Compat<"variadic 'friend' declarations are">;
 defm binding_pack : CXX26Compat<"structured binding packs are">;
 
+// Grouped using-declarations e.g. 'using a::b::{A, B};'.
+defm grouped_using_declaration : CXX29Compat<
+  "a braced using-item-list is">;
+
 def err_asm_qualifier_ignored : Error<
   "expected 'volatile', 'inline', 'goto', or '('">, CatInlineAsm;
 def err_global_asm_qualifier_ignored : Error<
@@ -701,6 +705,25 @@ def err_function_is_not_record : Error<
   "unexpected %0 in function call; perhaps remove the %0?">;
 def err_super_in_using_declaration : Error<
   "'__super' cannot be used with a using declaration">;
+def err_using_group_requires_qualname : Error<
+  "a braced using-item-list requires a qualified name before '{'">;
+def err_using_empty_item_list : Error<
+  "a braced using-item-list cannot be empty">;
+def err_using_glob_requires_qualname : Error<
+  "a using-declaration with '*' requires a qualified name before '*'">;
+def err_using_glob_typename : Error<
+  "'typename' is not permitted on a using-declaration with '*'">;
+def err_using_this_outside_braced_list : Error<
+  "'this' is only permitted as an item of a braced using-item-list">;
+def err_using_item_leading_coloncolon : Error<
+  "the nested-name-specifier of a using-item cannot begin with '::'">;
+def err_using_item_bare_brace : Error<
+  "a nested braced using-item-list must be preceded by a nested-name-specifier">;
+def err_using_this_followed_by_scope : Error<
+  "'this' cannot be followed by '::' in a using-item">;
+def err_using_pack_non_pack_item : Error<
+  "a pack expansion '...' cannot be applied to a braced using-item-list "
+  "containing a %select{'*'|'this'}0 item">;
 
 def warn_empty_init_statement : Warning<
   "empty initialization statement of '%select{if|switch|range-based for}0' "

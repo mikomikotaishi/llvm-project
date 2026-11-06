@@ -12837,6 +12837,29 @@ Decl *Sema::ActOnUsingDeclaration(Scope *S, AccessSpecifier AS,
     }
   }
 
+  // If the terminal name of the using-declarator denotes a namespace, the
+  // using-declarator is equivalent to a namespace-alias-definition.
+  if (EllipsisLoc.isInvalid() && !SS.isInvalid() &&
+      TargetName.getNameKind() == DeclarationName::Identifier &&
+      !isDependentScopeSpecifier(SS)) {
+    if (DeclContext *LookupCtx =
+            computeDeclContext(SS, /*EnteringContext=*/false);
+        LookupCtx && LookupCtx->isFileContext()) {
+      LookupResult NSR(*this, TargetNameInfo, LookupNamespaceName);
+      NSR.suppressDiagnostics();
+      LookupQualifiedName(NSR, LookupCtx);
+      if (!NSR.isAmbiguous()) {
+        if (auto *NS = NSR.getAsSingle<NamespaceDecl>()) {
+          bool IsMemberContext = CurContext->isRecord();
+          return BuildUsingNamespaceAlias(
+              S, UsingLoc, SS, TargetName.getAsIdentifierInfo(),
+              TargetNameInfo.getLoc(), NS, IsMemberContext,
+              TypenameLoc.isValid(), TypenameLoc);
+        }
+      }
+    }
+  }
+
   NamedDecl *UD =
       BuildUsingDeclaration(S, AS, UsingLoc, TypenameLoc.isValid(), TypenameLoc,
                             SS, TargetNameInfo, EllipsisLoc, AttrList,
@@ -12887,6 +12910,147 @@ Decl *Sema::ActOnUsingEnumDeclaration(Scope *S, AccessSpecifier AS,
     PushOnScopeChains(UD, S, /*AddToContext*/ false);
 
   return UD;
+}
+
+Decl *Sema::ActOnUsingGlobDeclaration(Scope *S, AccessSpecifier AS,
+                                      SourceLocation UsingLoc, CXXScopeSpec &SS,
+                                      SourceLocation StarLoc,
+                                      const ParsedAttributesView &AttrList) {
+  assert(SS.isNotEmpty() && "glob using-declaration requires a qualifier");
+
+  NestedNameSpecifier Qualifier = SS.getScopeRep();
+  if (Qualifier.getKind() == NestedNameSpecifier::Kind::Global) {
+    Diag(StarLoc, diag::err_using_glob_global_scope) << SS.getRange();
+    return nullptr;
+  }
+
+  if (isDependentScopeSpecifier(SS)) {
+    Diag(StarLoc, diag::err_using_glob_dependent) << SS.getRange();
+    return nullptr;
+  }
+
+  DeclContext *DC = computeDeclContext(SS, /*EnteringContext=*/false);
+  if (!DC) {
+    Diag(StarLoc, diag::err_using_glob_not_namespace_or_enum) << SS.getRange();
+    return nullptr;
+  }
+
+  if (auto *NS = dyn_cast<NamespaceDecl>(DC)) {
+    DeclContext *CommonAncestor = NS;
+    while (CommonAncestor && !CommonAncestor->Encloses(CurContext))
+      CommonAncestor = CommonAncestor->getParent();
+
+    Scope *DeclScope = S->getDeclParent();
+    UsingDirectiveDecl *UDir = UsingDirectiveDecl::Create(
+        Context, CurContext, UsingLoc, StarLoc,
+        SS.getWithLocInContext(Context), StarLoc, NS, CommonAncestor);
+
+    if (IsUsingDirectiveInToplevelContext(CurContext) &&
+        !SourceMgr.isInMainFile(SourceMgr.getExpansionLoc(StarLoc)))
+      Diag(StarLoc, diag::warn_using_directive_in_header);
+
+    ProcessDeclAttributeList(DeclScope, UDir, AttrList);
+    ProcessAPINotes(UDir);
+    PushUsingDirective(DeclScope, UDir);
+    return UDir;
+  }
+
+  if (auto *ED = dyn_cast<EnumDecl>(DC)) {
+    QualType EnumTy = Context.getTypeDeclType(ElaboratedTypeKeyword::None,
+                                              /*Qualifier=*/std::nullopt, ED);
+    TypeSourceInfo *TSI = Context.getTrivialTypeSourceInfo(EnumTy, StarLoc);
+    auto *UD =
+        BuildUsingEnumDeclaration(S, AS, UsingLoc, StarLoc, StarLoc, TSI, ED);
+    if (UD)
+      PushOnScopeChains(UD, S, /*AddToContext*/ false);
+    return UD;
+  }
+
+  Diag(StarLoc, diag::err_using_glob_not_namespace_or_enum) << SS.getRange();
+  return nullptr;
+}
+
+Decl *Sema::BuildUsingNamespaceAlias(Scope *S, SourceLocation UsingLoc,
+                                     CXXScopeSpec &Prefix, IdentifierInfo *Alias,
+                                     SourceLocation AliasLoc,
+                                     const NamespaceDecl *NS,
+                                     bool IsMemberContext, bool HasTypename,
+                                     SourceLocation TypenameLoc) {
+  if (IsMemberContext) {
+    Diag(AliasLoc, diag::err_using_decl_namespace_alias_in_class);
+    return nullptr;
+  }
+  if (HasTypename) {
+    Diag(TypenameLoc, diag::err_using_decl_namespace_alias_typename)
+        << FixItHint::CreateRemoval(SourceRange(TypenameLoc));
+    return nullptr;
+  }
+
+  // Delegate to the normal namespace-alias-definition machinery
+  (void)NS;
+  return ActOnNamespaceAliasDef(S, UsingLoc, UsingLoc, Alias, Prefix, AliasLoc,
+                                Alias);
+}
+
+Decl *Sema::ActOnUsingThisDeclaration(Scope *S, AccessSpecifier AS,
+                                      SourceLocation UsingLoc,
+                                      CXXScopeSpec &EnclosingSS,
+                                      SourceLocation ThisLoc,
+                                      bool IsMemberContext,
+                                      const ParsedAttributesView &AttrList) {
+  assert(EnclosingSS.isNotEmpty() && "'this' requires an enclosing qualifier");
+
+  NestedNameSpecifier Qualifier = EnclosingSS.getScopeRep();
+
+  if (Qualifier.getKind() == NestedNameSpecifier::Kind::Global) {
+    Diag(ThisLoc, diag::err_using_this_global_scope) << EnclosingSS.getRange();
+    return nullptr;
+  }
+
+  NestedNameSpecifierLoc QLoc = EnclosingSS.getWithLocInContext(Context);
+
+  if (Qualifier.getKind() == NestedNameSpecifier::Kind::Namespace) {
+    NamespaceAndPrefixLoc NP = QLoc.getAsNamespaceAndPrefix();
+    if (auto *NS = dyn_cast<NamespaceDecl>(NP.Namespace)) {
+      IdentifierInfo *Alias = NS->getIdentifier();
+      CXXScopeSpec PrefixSS;
+      if (NP.Prefix)
+        PrefixSS.Adopt(NP.Prefix);
+      return BuildUsingNamespaceAlias(S, UsingLoc, PrefixSS, Alias, ThisLoc, NS,
+                                      IsMemberContext, /*HasTypename=*/false,
+                                      SourceLocation());
+    }
+  }
+
+  if (Qualifier.getKind() == NestedNameSpecifier::Kind::Type) {
+    TypeLoc TL = QLoc.getAsTypeLoc();
+    NestedNameSpecifierLoc PrefixLoc = TL.getPrefix();
+    if (!PrefixLoc) {
+      Diag(ThisLoc, diag::err_using_this_names_class_or_enum)
+          << QualType(Qualifier.getAsType(), 0);
+      return nullptr;
+    }
+    auto *TD = Qualifier.getAsType()->getAsTagDecl();
+    if (!TD) {
+      Diag(ThisLoc, diag::err_using_this_names_class_or_enum)
+          << QualType(Qualifier.getAsType(), 0);
+      return nullptr;
+    }
+    CXXScopeSpec PrefixSS;
+    PrefixSS.Adopt(PrefixLoc);
+    DeclarationNameInfo NameInfo(TD->getDeclName(), ThisLoc);
+    NamedDecl *UD = BuildUsingDeclaration(
+        S, AS, UsingLoc, /*HasTypenameKeyword=*/false, SourceLocation(),
+        PrefixSS, NameInfo, /*EllipsisLoc=*/SourceLocation(), AttrList,
+        /*IsInstantiation=*/false, /*IsUsingIfExists=*/false);
+    if (UD)
+      PushOnScopeChains(UD, S, /*AddToContext=*/false);
+    return UD;
+  }
+
+  Diag(ThisLoc, diag::err_using_this_names_class_or_enum)
+      << EnclosingSS.getRange();
+  return nullptr;
 }
 
 /// Determine whether a using declaration considers the given
